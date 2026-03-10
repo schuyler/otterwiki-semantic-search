@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "otterwiki-semantic-search"
+description = "Semantic/similarity search plugin for An Otter Wiki using ChromaDB"
+version = "0.1.0"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "otterwiki",
+    "pyyaml",
+    "chromadb",
+]
+
+[project.optional-dependencies]
+local = [
+    "sentence-transformers",
+]
+dev = [
+    "pytest",
+]
+
+[project.entry-points.otterwiki]
+semantic_search = "otterwiki_semantic_search"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

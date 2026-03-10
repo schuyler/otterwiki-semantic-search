@@ -1,0 +1,69 @@
+"""API routes for semantic search."""
+
+from flask import jsonify, request
+
+from otterwiki_semantic_search import _state, search_bp
+from otterwiki_semantic_search import index
+
+
+@search_bp.route("/semantic-search", methods=["GET"])
+def semantic_search():
+    if not _state.get("available"):
+        return jsonify({"error": "ChromaDB is not available"}), 503
+
+    query = request.args.get("q")
+    if not query:
+        return jsonify({"error": "Missing required parameter: q"}), 422
+
+    try:
+        n = int(request.args.get("n", 5))
+    except (ValueError, TypeError):
+        n = 5
+    n = max(1, min(n, index.MAX_SEARCH_RESULTS))
+
+    results = index.search(query, n=n)
+    return jsonify({
+        "query": query,
+        "results": results,
+        "total": len(results),
+    })
+
+
+@search_bp.route("/reindex", methods=["POST"])
+def reindex():
+    if not _state.get("available"):
+        return jsonify({"error": "ChromaDB is not available"}), 503
+
+    if index.is_reindex_in_progress():
+        return jsonify({"error": "Reindex already in progress"}), 409
+
+    storage = _state.get("storage")
+    app = _state.get("app")
+    app_config = app.config if app else None
+
+    result = index.reindex_all(storage, app_config)
+    return jsonify({
+        "status": "ok",
+        **result,
+    })
+
+
+@search_bp.route("/chroma-status", methods=["GET"])
+def chroma_status():
+    available = _state.get("available", False)
+    collection = _state.get("collection")
+
+    status = {
+        "status": "ok" if available else "unavailable",
+        "collection": _state.get("collection_name", "otterwiki_pages"),
+    }
+
+    if available and collection is not None:
+        try:
+            status["document_count"] = collection.count()
+        except Exception:
+            status["document_count"] = 0
+    else:
+        status["document_count"] = 0
+
+    return jsonify(status)
