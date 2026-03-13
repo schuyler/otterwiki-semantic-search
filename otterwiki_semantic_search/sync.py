@@ -1,4 +1,4 @@
-"""Background sync thread to keep ChromaDB in sync with git changes."""
+"""Background sync thread to keep the vector index in sync with git changes."""
 
 import json
 import logging
@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 
 class SyncThread(threading.Thread):
-    """Daemon thread that periodically syncs ChromaDB with git changes."""
+    """Daemon thread that periodically syncs the vector index with git changes."""
 
     def __init__(self, app, storage, interval=60, state_path="/app-data/chroma_sync_state.json"):
         super().__init__(daemon=True)
@@ -36,8 +36,8 @@ class SyncThread(threading.Thread):
     def _sync(self):
         from otterwiki_semantic_search import _state
 
-        collection = _state.get("collection")
-        if collection is None:
+        backend = _state.get("backend")
+        if backend is None:
             return
 
         # Don't start a reindex if one is already running
@@ -46,9 +46,9 @@ class SyncThread(threading.Thread):
 
         last_sha = self._read_state()
 
-        # If no state or collection is empty, do a full reindex
-        if last_sha is None or collection.count() == 0:
-            log.info("No sync state or empty collection, running full reindex")
+        # If no state or index is empty, do a full reindex
+        if last_sha is None or backend.count() == 0:
+            log.info("No sync state or empty index, running full reindex")
             index.reindex_all(self.storage, self.app.config)
             self._write_state()
             return
