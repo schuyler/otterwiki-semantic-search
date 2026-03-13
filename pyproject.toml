@@ -4,19 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "otterwiki-semantic-search"
-description = "Semantic/similarity search plugin for An Otter Wiki using ChromaDB"
-version = "0.1.0"
+description = "Semantic/similarity search plugin for An Otter Wiki"
+version = "0.2.0"
 requires-python = ">=3.9"
 license = "MIT"
 dependencies = [
     "otterwiki",
     "pyyaml",
-    "chromadb",
 ]
 
 [project.optional-dependencies]
+chroma = [
+    "chromadb",
+]
+faiss = [
+    "faiss-cpu",
+    "numpy",
+]
 local = [
     "sentence-transformers",
+]
+bedrock = [
+    "boto3",
 ]
 dev = [
     "pytest",

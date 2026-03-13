@@ -9,7 +9,7 @@ from otterwiki_semantic_search import index
 @search_bp.route("/semantic-search", methods=["GET"])
 def semantic_search():
     if not _state.get("available"):
-        return jsonify({"error": "ChromaDB is not available"}), 503
+        return jsonify({"error": "Vector backend is not available"}), 503
 
     query = request.args.get("q")
     if not query:
@@ -32,7 +32,7 @@ def semantic_search():
 @search_bp.route("/reindex", methods=["POST"])
 def reindex():
     if not _state.get("available"):
-        return jsonify({"error": "ChromaDB is not available"}), 503
+        return jsonify({"error": "Vector backend is not available"}), 503
 
     if index.is_reindex_in_progress():
         return jsonify({"error": "Reindex already in progress"}), 409
@@ -51,16 +51,17 @@ def reindex():
 @search_bp.route("/chroma-status", methods=["GET"])
 def chroma_status():
     available = _state.get("available", False)
-    collection = _state.get("collection")
+    backend = _state.get("backend")
 
     status = {
         "status": "ok" if available else "unavailable",
+        "backend_type": _state.get("backend_type", "chroma"),
         "collection": _state.get("collection_name", "otterwiki_pages"),
     }
 
-    if available and collection is not None:
+    if available and backend is not None:
         try:
-            status["document_count"] = collection.count()
+            status["document_count"] = backend.count()
         except Exception:
             status["document_count"] = 0
     else:

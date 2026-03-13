@@ -1,7 +1,8 @@
 """
 Otterwiki Semantic Search Plugin
 
-Adds vector-based semantic search to An Otter Wiki using ChromaDB.
+Adds vector-based semantic search to An Otter Wiki.
+Supports ChromaDB (default) and FAISS backends.
 """
 
 import logging
@@ -19,9 +20,14 @@ _DEFAULT_STATE = {
     "app": None,
     "storage": None,
     "db": None,
+    # Legacy keys for backward compatibility
     "client": None,
     "collection": None,
     "collection_name": "otterwiki_pages",
+    # New backend abstraction
+    "backend": None,
+    "embedding_fn": None,
+    "backend_type": None,
     "available": False,
     "sync_thread": None,
 }
@@ -50,9 +56,26 @@ def get_filename(pagepath):
     return p
 
 
+def _init_backend():
+    """Initialize the vector backend based on VECTOR_BACKEND env var.
+
+    Supported values:
+    - "chroma" (default): Uses ChromaDB with internal embedding.
+    - "faiss": Uses FAISS with an external embedding function.
+    """
+    backend_type = os.environ.get("VECTOR_BACKEND", "chroma").lower()
+    _state["backend_type"] = backend_type
+
+    if backend_type == "faiss":
+        _init_faiss()
+    else:
+        _init_chromadb()
+
+
 def _init_chromadb():
-    """Initialize ChromaDB client based on CHROMADB_MODE env var."""
+    """Initialize ChromaDB backend."""
     import chromadb
+    from otterwiki_semantic_search.backends.chroma_backend import ChromaBackend
 
     mode = os.environ.get("CHROMADB_MODE", "server")
     collection_name = os.environ.get("CHROMA_COLLECTION", "otterwiki_pages")
@@ -66,14 +89,61 @@ def _init_chromadb():
         port = int(os.environ.get("CHROMADB_PORT", "8000"))
         client = chromadb.HttpClient(host=host, port=port)
 
+    backend = ChromaBackend(client, collection_name)
+
+    # Keep legacy state for backward compatibility
     _state["client"] = client
-    _state["collection"] = client.get_or_create_collection(collection_name)
+    _state["collection"] = backend.collection
+
+    _state["backend"] = backend
+    _state["embedding_fn"] = None  # ChromaDB handles embedding internally
     _state["available"] = True
-    log.info("ChromaDB initialized in %s mode (collection: %s)", mode, collection_name)
+    log.info("ChromaDB backend initialized in %s mode (collection: %s)", mode, collection_name)
 
 
-class ChromaHookListener:
-    """Listens for page lifecycle hooks to update the ChromaDB index."""
+def _init_faiss():
+    """Initialize FAISS backend with configured embedding function."""
+    index_dir = os.environ.get("FAISS_INDEX_DIR", "/app-data/faiss")
+
+    embedding_fn = _create_embedding_fn()
+    from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+
+    backend = FAISSBackend(index_dir, embedding_fn)
+
+    _state["backend"] = backend
+    _state["embedding_fn"] = embedding_fn
+    _state["available"] = True
+    log.info("FAISS backend initialized (index_dir: %s)", index_dir)
+
+
+def _create_embedding_fn():
+    """Create the embedding function based on EMBEDDING_MODEL env var.
+
+    Supported values:
+    - "local" (default): sentence-transformers all-MiniLM-L6-v2
+    - "bedrock": AWS Bedrock titan-embed-text-v2
+    """
+    model = os.environ.get("EMBEDDING_MODEL", "local").lower()
+
+    if model == "bedrock":
+        from otterwiki_semantic_search.embeddings.bedrock import BedrockEmbeddingFunction
+
+        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+        dimensions = int(os.environ.get("BEDROCK_EMBED_DIMENSIONS", "1024"))
+        return BedrockEmbeddingFunction(region_name=region, dimensions=dimensions)
+    else:
+        from otterwiki_semantic_search.embeddings.sentence_transformer import (
+            SentenceTransformerEmbeddingFunction,
+        )
+
+        model_name = os.environ.get(
+            "SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2"
+        )
+        return SentenceTransformerEmbeddingFunction(model_name=model_name)
+
+
+class HookListener:
+    """Listens for page lifecycle hooks to update the vector index."""
 
     @hookimpl
     def page_saved(self, pagepath, content, author, message):
@@ -99,7 +169,6 @@ class ChromaHookListener:
             from otterwiki_semantic_search import index
 
             index.delete_page(old_pagepath)
-            # Load new content from storage and index it
             storage = _state.get("storage")
             if storage:
                 filename = get_filename(new_pagepath)
@@ -123,11 +192,11 @@ class OtterwikiSemanticSearchPlugin:
         if not os.environ.get("OTTERWIKI_API_KEY"):
             log.warning("OTTERWIKI_API_KEY not set — semantic search endpoints will reject all requests")
 
-        # Initialize ChromaDB
+        # Initialize vector backend
         try:
-            _init_chromadb()
+            _init_backend()
         except Exception:
-            log.warning("ChromaDB initialization failed. Semantic search will be unavailable.", exc_info=True)
+            log.warning("Vector backend initialization failed. Semantic search will be unavailable.", exc_info=True)
             _state["available"] = False
 
         # Import auth + routes to register them on the blueprint
@@ -141,13 +210,12 @@ class OtterwikiSemanticSearchPlugin:
         if _state["available"]:
             try:
                 if hasattr(plugin_manager.hook, "page_saved"):
-                    plugin_manager.register(ChromaHookListener())
-                    log.info("Registered ChromaHookListener for page lifecycle hooks")
+                    plugin_manager.register(HookListener())
+                    log.info("Registered HookListener for page lifecycle hooks")
             except Exception:
-                log.warning("Could not register ChromaHookListener", exc_info=True)
+                log.warning("Could not register HookListener", exc_info=True)
 
-        # Start background sync thread — it handles initial reindex on first
-        # cycle if the collection is empty, so no separate reindex thread needed.
+        # Start background sync thread
         if _state["available"]:
             interval = int(os.environ.get("CHROMA_SYNC_INTERVAL", "60"))
             state_path = os.environ.get(
