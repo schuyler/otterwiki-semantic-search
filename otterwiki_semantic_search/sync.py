@@ -1,4 +1,10 @@
-"""Background sync thread to keep the vector index in sync with git changes."""
+"""Background sync thread to keep the vector index in sync with git changes.
+
+DEPRECATED: In multi-tenant mode, page lifecycle hooks handle index updates
+directly via the BackendRegistry. The SyncThread is no longer started by
+setup(). This module is retained for backward compatibility with single-tenant
+ChromaDB deployments.
+"""
 
 import json
 import logging

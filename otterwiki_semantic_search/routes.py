@@ -6,6 +6,17 @@ from otterwiki_semantic_search import _state, search_bp
 from otterwiki_semantic_search import index
 
 
+def _resolve_backend():
+    """Resolve the per-wiki backend from registry, or fall back to singleton."""
+    registry = _state.get("registry")
+    if registry is not None:
+        try:
+            return registry.get_for_current_request()
+        except RuntimeError:
+            pass
+    return _state.get("backend")
+
+
 @search_bp.route("/semantic-search", methods=["GET"])
 def semantic_search():
     if not _state.get("available"):
@@ -21,7 +32,8 @@ def semantic_search():
         n = 5
     n = max(1, min(n, index.MAX_SEARCH_RESULTS))
 
-    results = index.search(query, n=n)
+    backend = _resolve_backend()
+    results = index.search(query, n=n, backend=backend)
     return jsonify({
         "query": query,
         "results": results,
@@ -41,7 +53,8 @@ def reindex():
     app = _state.get("app")
     app_config = app.config if app else None
 
-    result = index.reindex_all(storage, app_config)
+    backend = _resolve_backend()
+    result = index.reindex_all(storage, app_config, backend=backend)
     return jsonify({
         "status": "ok",
         **result,
@@ -51,7 +64,7 @@ def reindex():
 @search_bp.route("/chroma-status", methods=["GET"])
 def chroma_status():
     available = _state.get("available", False)
-    backend = _state.get("backend")
+    backend = _resolve_backend() if available else None
 
     status = {
         "status": "ok" if available else "unavailable",

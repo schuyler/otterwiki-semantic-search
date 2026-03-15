@@ -29,7 +29,8 @@ _DEFAULT_STATE = {
     "embedding_fn": None,
     "backend_type": None,
     "available": False,
-    "sync_thread": None,
+    # Multi-tenant FAISS registry (replaces singleton backend for FAISS)
+    "registry": None,
 }
 
 # Shared state populated during setup()
@@ -38,9 +39,6 @@ _state = dict(_DEFAULT_STATE)
 
 def reset_state():
     """Reset shared state to defaults. Used by tests."""
-    sync_thread = _state.get("sync_thread")
-    if sync_thread is not None:
-        sync_thread.stop()
     _state.update(_DEFAULT_STATE)
 
 
@@ -102,18 +100,29 @@ def _init_chromadb():
 
 
 def _init_faiss():
-    """Initialize FAISS backend with configured embedding function."""
-    index_dir = os.environ.get("FAISS_INDEX_DIR", "/app-data/faiss")
+    """Initialize FAISS backend registry for multi-tenant per-wiki indexes.
+
+    Creates a BackendRegistry that lazily creates FAISSBackend instances
+    per wiki slug under {FAISS_INDEX_DIR}/{slug}/. Also creates a default
+    backend for the current storage (backward compatibility).
+    """
+    base_dir = os.environ.get("FAISS_INDEX_DIR", "/app-data/faiss")
 
     embedding_fn = _create_embedding_fn()
-    from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+    from otterwiki_semantic_search.registry import BackendRegistry
 
-    backend = FAISSBackend(index_dir, embedding_fn)
-
-    _state["backend"] = backend
+    registry = BackendRegistry(base_dir, embedding_fn)
+    _state["registry"] = registry
     _state["embedding_fn"] = embedding_fn
+
+    # Create the default backend for the current wiki (backward compat)
+    storage = _state.get("storage")
+    if storage is not None:
+        backend = registry.get_for_current_request()
+        _state["backend"] = backend
+
     _state["available"] = True
-    log.info("FAISS backend initialized (index_dir: %s)", index_dir)
+    log.info("FAISS multi-tenant registry initialized (base_dir: %s)", base_dir)
 
 
 def _create_embedding_fn():
@@ -150,12 +159,23 @@ def _create_embedding_fn():
 class HookListener:
     """Listens for page lifecycle hooks to update the vector index."""
 
+    def _resolve_backend(self):
+        """Resolve the per-wiki backend from the registry, or fall back to singleton."""
+        registry = _state.get("registry")
+        if registry is not None:
+            try:
+                return registry.get_for_current_request()
+            except RuntimeError:
+                pass
+        return _state.get("backend")
+
     @hookimpl
     def page_saved(self, pagepath, content, author, message):
         try:
             from otterwiki_semantic_search import index
 
-            index.upsert_page(pagepath, content)
+            backend = self._resolve_backend()
+            index.upsert_page(pagepath, content, backend=backend)
         except Exception:
             log.exception("Hook page_saved failed for %s", pagepath)
 
@@ -164,7 +184,8 @@ class HookListener:
         try:
             from otterwiki_semantic_search import index
 
-            index.delete_page(pagepath)
+            backend = self._resolve_backend()
+            index.delete_page(pagepath, backend=backend)
         except Exception:
             log.exception("Hook page_deleted failed for %s", pagepath)
 
@@ -173,13 +194,14 @@ class HookListener:
         try:
             from otterwiki_semantic_search import index
 
-            index.delete_page(old_pagepath)
+            backend = self._resolve_backend()
+            index.delete_page(old_pagepath, backend=backend)
             storage = _state.get("storage")
             if storage:
                 filename = get_filename(new_pagepath)
                 if storage.exists(filename):
                     content = storage.load(filename)
-                    index.upsert_page(new_pagepath, content)
+                    index.upsert_page(new_pagepath, content, backend=backend)
         except Exception:
             log.exception(
                 "Hook page_renamed failed for %s -> %s", old_pagepath, new_pagepath
@@ -220,17 +242,9 @@ class OtterwikiSemanticSearchPlugin:
             except Exception:
                 log.warning("Could not register HookListener", exc_info=True)
 
-        # Start background sync thread
-        if _state["available"]:
-            interval = int(os.environ.get("CHROMA_SYNC_INTERVAL", "60"))
-            state_path = os.environ.get(
-                "CHROMA_SYNC_STATE_PATH", "/app-data/chroma_sync_state.json"
-            )
-            from otterwiki_semantic_search.sync import SyncThread
-
-            sync = SyncThread(app, storage, interval=interval, state_path=state_path)
-            sync.start()
-            _state["sync_thread"] = sync
+        # NOTE: SyncThread is deprecated in multi-tenant mode.
+        # Page lifecycle hooks handle index updates directly.
+        # See sync.py for details.
 
 
 plugin_manager.register(OtterwikiSemanticSearchPlugin())

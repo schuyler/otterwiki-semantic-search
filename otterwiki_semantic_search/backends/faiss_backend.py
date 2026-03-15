@@ -1,5 +1,6 @@
 """FAISS vector store backend with sidecar metadata."""
 
+import fcntl
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ class FAISSBackend(VectorBackend):
 
         self._index_path = os.path.join(index_dir, "index.faiss")
         self._sidecar_path = os.path.join(index_dir, "embeddings.json")
+        self._lock_path = os.path.join(index_dir, ".lock")
 
         # Load existing index or create new
         if os.path.exists(self._index_path) and os.path.exists(self._sidecar_path):
@@ -58,20 +60,32 @@ class FAISSBackend(VectorBackend):
             self._sidecar = []  # list of entry dicts, indexed by FAISS position
 
     def _load_sidecar(self):
-        """Load the sidecar metadata file."""
+        """Load the sidecar metadata file with a shared (read) file lock."""
         try:
-            with open(self._sidecar_path, "r") as f:
-                return json.load(f)
+            lock_fd = open(self._lock_path, "w")
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_SH)
+                with open(self._sidecar_path, "r") as f:
+                    return json.load(f)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
         except (FileNotFoundError, json.JSONDecodeError):
             return []
 
     def _save(self):
-        """Persist the FAISS index and sidecar to disk."""
+        """Persist the FAISS index and sidecar to disk with an exclusive file lock."""
         import faiss
 
-        faiss.write_index(self._index, self._index_path)
-        with open(self._sidecar_path, "w") as f:
-            json.dump(self._sidecar, f)
+        lock_fd = open(self._lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            faiss.write_index(self._index, self._index_path)
+            with open(self._sidecar_path, "w") as f:
+                json.dump(self._sidecar, f)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
     def upsert(self, ids, texts, metadatas, embeddings=None):
         """Insert or update chunks in the FAISS index.

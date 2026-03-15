@@ -15,20 +15,38 @@ _UPSERT_BATCH_SIZE = 5000
 
 
 def _get_backend():
+    """Get the backend, preferring registry resolution for multi-tenant."""
     from otterwiki_semantic_search import _state
 
+    registry = _state.get("registry")
+    if registry is not None:
+        try:
+            return registry.get_for_current_request()
+        except RuntimeError:
+            pass
     return _state.get("backend")
 
 
 def _get_embedding_fn():
     from otterwiki_semantic_search import _state
 
+    # Check registry first (multi-tenant shares embedding_fn)
+    registry = _state.get("registry")
+    if registry is not None:
+        return registry.embedding_fn
     return _state.get("embedding_fn")
 
 
-def upsert_page(pagepath, content):
-    """Chunk a page and upsert all chunks into the vector backend."""
-    backend = _get_backend()
+def upsert_page(pagepath, content, backend=None):
+    """Chunk a page and upsert all chunks into the vector backend.
+
+    Args:
+        pagepath: Page path identifier.
+        content: Page content text.
+        backend: Optional explicit backend. If None, resolved from registry.
+    """
+    if backend is None:
+        backend = _get_backend()
     if backend is None:
         return
 
@@ -62,9 +80,15 @@ def upsert_page(pagepath, content):
         log.exception("Failed to upsert page %s", pagepath)
 
 
-def delete_page(pagepath):
-    """Delete all chunks for a page from the vector backend."""
-    backend = _get_backend()
+def delete_page(pagepath, backend=None):
+    """Delete all chunks for a page from the vector backend.
+
+    Args:
+        pagepath: Page path identifier.
+        backend: Optional explicit backend. If None, resolved from registry.
+    """
+    if backend is None:
+        backend = _get_backend()
     if backend is None:
         return
 
@@ -76,9 +100,16 @@ def delete_page(pagepath):
         log.exception("Failed to delete page %s", pagepath)
 
 
-def search(query, n=5):
-    """Search for pages similar to query. Returns list of result dicts."""
-    backend = _get_backend()
+def search(query, n=5, backend=None):
+    """Search for pages similar to query. Returns list of result dicts.
+
+    Args:
+        query: Search query text.
+        n: Maximum number of results.
+        backend: Optional explicit backend. If None, resolved from registry.
+    """
+    if backend is None:
+        backend = _get_backend()
     if backend is None:
         return []
 
@@ -165,9 +196,16 @@ def _batch_upsert(backend, chunks, embedding_fn=None):
         )
 
 
-def reindex_all(storage, app_config=None):
-    """Delete and rebuild the entire index from storage."""
-    backend = _get_backend()
+def reindex_all(storage, app_config=None, backend=None):
+    """Delete and rebuild the entire index from storage.
+
+    Args:
+        storage: Git storage instance.
+        app_config: Flask app config dict.
+        backend: Optional explicit backend. If None, resolved from registry.
+    """
+    if backend is None:
+        backend = _get_backend()
     if backend is None:
         return {"pages_indexed": 0, "chunks_created": 0}
 
