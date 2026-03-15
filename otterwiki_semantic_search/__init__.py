@@ -121,6 +121,7 @@ def _create_embedding_fn():
 
     Supported values:
     - "local" (default): sentence-transformers all-MiniLM-L6-v2
+    - "onnx": ChromaDB's ONNX MiniLM-L6-v2 (no torch dependency)
     - "bedrock": AWS Bedrock titan-embed-text-v2
     """
     model = os.environ.get("EMBEDDING_MODEL", "local").lower()
@@ -131,6 +132,10 @@ def _create_embedding_fn():
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
         dimensions = int(os.environ.get("BEDROCK_EMBED_DIMENSIONS", "1024"))
         return BedrockEmbeddingFunction(region_name=region, dimensions=dimensions)
+    elif model == "onnx":
+        from otterwiki_semantic_search.embeddings.onnx_embedding import ONNXEmbeddingFunction
+
+        return ONNXEmbeddingFunction()
     else:
         from otterwiki_semantic_search.embeddings.sentence_transformer import (
             SentenceTransformerEmbeddingFunction,
