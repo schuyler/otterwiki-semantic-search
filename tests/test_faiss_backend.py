@@ -342,6 +342,34 @@ class TestFAISSBackendConcurrency:
         backend2 = FAISSBackend(faiss_dir, embedding_fn)
         assert backend2.count() == 0
 
+    def test_mismatch_detection_resets_when_sidecar_longer(self, faiss_dir, embedding_fn):
+        """If the sidecar has more entries than the FAISS index, the backend resets."""
+        from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+
+        backend = FAISSBackend(faiss_dir, embedding_fn)
+        backend.upsert(
+            ids=["page1::chunk_0", "page1::chunk_1"],
+            texts=["Alpha", "Beta"],
+            metadatas=[
+                {"page_path": "page1", "chunk_index": 0},
+                {"page_path": "page1", "chunk_index": 1},
+            ],
+        )
+        assert backend.count() == 2
+
+        # Append extra entries to sidecar to simulate index having fewer vectors
+        sidecar_path = os.path.join(faiss_dir, "embeddings.json")
+        with open(sidecar_path, "r") as f:
+            full_sidecar = json.load(f)
+        extra_entry = {"id": "page1::chunk_2", "text": "Gamma", "metadata": {"page_path": "page1", "chunk_index": 2}}
+        full_sidecar.append(extra_entry)
+        with open(sidecar_path, "w") as f:
+            json.dump(full_sidecar, f)
+
+        # Reload — mismatch guard should reset to empty
+        backend2 = FAISSBackend(faiss_dir, embedding_fn)
+        assert backend2.count() == 0
+
 
 class TestFAISSBackendDeduplication:
     """Test that search results can be deduplicated by page."""

@@ -51,6 +51,11 @@ class FAISSBackend(VectorBackend):
         self._sidecar_path = os.path.join(index_dir, "embeddings.json")
         self._lock_path = os.path.join(index_dir, ".lock")
 
+        # Clean up orphaned temp files from interrupted saves
+        for tmp in (self._index_path + ".tmp", self._sidecar_path + ".tmp"):
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
         # Load existing index or create new
         if os.path.exists(self._index_path) and os.path.exists(self._sidecar_path):
             loaded_index = faiss.read_index(self._index_path)
@@ -72,7 +77,7 @@ class FAISSBackend(VectorBackend):
     def _load_sidecar(self):
         """Load the sidecar metadata file with a shared (read) file lock."""
         try:
-            lock_fd = open(self._lock_path, "w")
+            lock_fd = open(self._lock_path, "a")
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_SH)
                 with open(self._sidecar_path, "r") as f:
@@ -96,7 +101,7 @@ class FAISSBackend(VectorBackend):
         tmp_index = self._index_path + ".tmp"
         tmp_sidecar = self._sidecar_path + ".tmp"
 
-        lock_fd = open(self._lock_path, "w")
+        lock_fd = open(self._lock_path, "a")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             faiss.write_index(self._index, tmp_index)
