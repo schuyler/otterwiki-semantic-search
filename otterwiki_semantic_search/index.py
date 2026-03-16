@@ -100,13 +100,14 @@ def delete_page(pagepath, backend=None):
         log.exception("Failed to delete page %s", pagepath)
 
 
-def search(query, n=5, backend=None):
+def search(query, n=5, backend=None, max_chunks_per_page=2):
     """Search for pages similar to query. Returns list of result dicts.
 
     Args:
         query: Search query text.
         n: Maximum number of results.
         backend: Optional explicit backend. If None, resolved from registry.
+        max_chunks_per_page: Max chunks returned per page (1-5, default 2).
     """
     if backend is None:
         backend = _get_backend()
@@ -114,6 +115,9 @@ def search(query, n=5, backend=None):
         return []
 
     n = max(1, min(n, MAX_SEARCH_RESULTS))
+    max_chunks_per_page = max(1, min(max_chunks_per_page, 5))
+
+    prefetch = min(n * max_chunks_per_page * 2, MAX_SEARCH_RESULTS)
 
     try:
         embedding_fn = _get_embedding_fn()
@@ -122,13 +126,13 @@ def search(query, n=5, backend=None):
             query_embeddings = embedding_fn.embed([query])
             results = backend.query(
                 query_embeddings=query_embeddings,
-                n_results=n * 3,
+                n_results=prefetch,
             )
         else:
             # ChromaDB path: backend handles embedding internally
             results = backend.query(
                 query_texts=[query],
-                n_results=n * 3,
+                n_results=prefetch,
             )
     except Exception:
         # Fall back to smaller query
@@ -151,30 +155,56 @@ def search(query, n=5, backend=None):
     if not results or not results["ids"] or not results["ids"][0]:
         return []
 
-    # Deduplicate by page_path, keeping the chunk with lowest distance
-    seen = {}
     ids = results["ids"][0]
     documents = results["documents"][0]
     metadatas = results["metadatas"][0]
     distances = results["distances"][0]
 
+    # Deduplicate by page_path, keeping up to max_chunks_per_page best chunks
+    page_chunks = {}  # page_path -> list of result dicts (sorted by distance)
     for i, doc_id in enumerate(ids):
-        page_path = metadatas[i]["page_path"]
+        meta = metadatas[i]
+        page_path = meta["page_path"]
         distance = distances[i]
-        if page_path not in seen or distance < seen[page_path]["distance"]:
-            snippet = documents[i]
-            if len(snippet) > 150:
-                truncated = snippet[:150].rsplit(" ", 1)[0]
-                snippet = truncated + "..."
-            seen[page_path] = {
-                "name": page_path,
-                "path": page_path,
-                "snippet": snippet,
-                "distance": distance,
-            }
+        text = documents[i]
 
-    results_list = sorted(seen.values(), key=lambda x: x["distance"])
-    return results_list[:n]
+        # Strip the [section_path] prefix before computing snippet
+        section_path = meta.get("section_path")
+        if section_path:
+            prefix = f"[{section_path}] "
+            snippet_text = text[len(prefix):] if text.startswith(prefix) else text
+        else:
+            snippet_text = text
+        snippet = snippet_text
+        if len(snippet) > 150:
+            truncated = snippet[:150].rsplit(" ", 1)[0]
+            snippet = truncated + "..."
+
+        entry = {
+            "name": page_path,
+            "path": page_path,
+            "text": text,
+            "snippet": snippet,
+            "distance": distance,
+            "section": meta.get("section"),
+            "section_path": meta.get("section_path"),
+            "chunk_index": meta.get("chunk_index"),
+            "total_chunks": meta.get("total_chunks"),
+            "page_word_count": meta.get("page_word_count"),
+        }
+
+        if page_path not in page_chunks:
+            page_chunks[page_path] = []
+        if len(page_chunks[page_path]) < max_chunks_per_page:
+            page_chunks[page_path].append(entry)
+
+    # Flatten and sort by distance
+    all_results = []
+    for chunks in page_chunks.values():
+        all_results.extend(chunks)
+
+    all_results.sort(key=lambda x: x["distance"])
+    return all_results[:n]
 
 
 def is_reindex_in_progress():

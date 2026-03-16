@@ -32,8 +32,13 @@ def semantic_search():
         n = 5
     n = max(1, min(n, index.MAX_SEARCH_RESULTS))
 
+    try:
+        max_chunks_per_page = int(request.args.get("max_chunks_per_page", 2))
+    except (ValueError, TypeError):
+        max_chunks_per_page = 2
+
     backend = _resolve_backend()
-    results = index.search(query, n=n, backend=backend)
+    results = index.search(query, n=n, backend=backend, max_chunks_per_page=max_chunks_per_page)
     return jsonify({
         "query": query,
         "results": results,
