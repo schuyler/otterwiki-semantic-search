@@ -19,43 +19,9 @@ def _word_count(text):
     return len(text.split())
 
 
-def chunk_page(pagepath, content):
-    """Split a page into overlapping chunks for embedding.
-
-    Returns list of dicts with keys: id, text, metadata.
-    """
-    frontmatter, body = parse_frontmatter(content)
-    body = body.strip()
-
-    if not body:
-        return []
-
-    # Build metadata from frontmatter
-    meta = {"page_path": pagepath}
-    if frontmatter:
-        if "category" in frontmatter:
-            meta["category"] = str(frontmatter["category"])
-        if "tags" in frontmatter:
-            tags = frontmatter["tags"]
-            if isinstance(tags, list):
-                meta["tags"] = ", ".join(str(t) for t in tags)
-            else:
-                meta["tags"] = str(tags)
-        if "title" in frontmatter:
-            meta["title"] = str(frontmatter["title"])
-
-    # Short pages: single chunk
-    if _word_count(body) < MIN_CHUNK_WORDS:
-        return [
-            {
-                "id": f"{pagepath}::chunk_0",
-                "text": body,
-                "metadata": {**meta, "chunk_index": 0},
-            }
-        ]
-
-    # Split on paragraph boundaries
-    paragraphs = re.split(r'\n\n+', body)
+def _chunk_text(text: str) -> list:
+    """Split text into chunks by paragraph/sentence boundaries. No overlap."""
+    paragraphs = re.split(r'\n\n+', text)
     paragraphs = [p.strip() for p in paragraphs if p.strip()]
 
     chunks = []
@@ -96,6 +62,46 @@ def chunk_page(pagepath, content):
 
     if current_text_parts:
         chunks.append("\n\n".join(current_text_parts))
+
+    return chunks
+
+
+def chunk_page(pagepath, content):
+    """Split a page into overlapping chunks for embedding.
+
+    Returns list of dicts with keys: id, text, metadata.
+    """
+    frontmatter, body = parse_frontmatter(content)
+    body = body.strip()
+
+    if not body:
+        return []
+
+    # Build metadata from frontmatter
+    meta = {"page_path": pagepath}
+    if frontmatter:
+        if "category" in frontmatter:
+            meta["category"] = str(frontmatter["category"])
+        if "tags" in frontmatter:
+            tags = frontmatter["tags"]
+            if isinstance(tags, list):
+                meta["tags"] = ", ".join(str(t) for t in tags)
+            else:
+                meta["tags"] = str(tags)
+        if "title" in frontmatter:
+            meta["title"] = str(frontmatter["title"])
+
+    # Short pages: single chunk
+    if _word_count(body) < MIN_CHUNK_WORDS:
+        return [
+            {
+                "id": f"{pagepath}::chunk_0",
+                "text": body,
+                "metadata": {**meta, "chunk_index": 0},
+            }
+        ]
+
+    chunks = _chunk_text(body)
 
     # Add overlap between adjacent chunks (always capped to OVERLAP_WORDS)
     if len(chunks) > 1:
