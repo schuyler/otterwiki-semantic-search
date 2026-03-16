@@ -128,3 +128,87 @@ class TestChunkPage:
 
         result = chunk_page("test", content)
         assert len(result) > 1
+
+
+class TestSectionAwareChunking:
+    def test_section_prefix_in_chunk_text(self):
+        content = "---\ntitle: My Guide\n---\n# Introduction\n\nThis is the intro section with enough words.\n\n# Details\n\nHere are the details section contents."
+        result = chunk_page("test", content)
+        assert len(result) == 2
+        assert result[0]["text"].startswith("[My Guide > Introduction]")
+        assert result[1]["text"].startswith("[My Guide > Details]")
+        assert result[0]["metadata"]["section"] == "Introduction"
+        assert result[1]["metadata"]["section"] == "Details"
+        assert result[0]["metadata"]["section_path"] == "My Guide > Introduction"
+        assert result[1]["metadata"]["section_path"] == "My Guide > Details"
+
+    def test_section_path_nested_headings(self):
+        content = "---\ntitle: Nested Doc\n---\n# Chapter One\n\nSome chapter text here.\n\n## Section 1.1\n\nSome subsection text here.\n\n## Section 1.2\n\nMore subsection content here."
+        result = chunk_page("test", content)
+        assert result[0]["metadata"]["section_path"] == "Nested Doc > Chapter One"
+        assert result[1]["metadata"]["section_path"] == "Nested Doc > Chapter One > Section 1.1"
+        assert result[2]["metadata"]["section_path"] == "Nested Doc > Chapter One > Section 1.2"
+
+    def test_preamble_section(self):
+        content = "---\ntitle: Preamble Test\n---\nThis is preamble text before any heading.\n\n# First Section\n\nThis is the first section body."
+        result = chunk_page("test", content)
+        assert len(result) == 2
+        assert result[0]["text"].startswith("[Preamble Test]")
+        assert result[0]["metadata"]["section"] == ""
+        assert result[0]["metadata"]["section_path"] == "Preamble Test"
+        assert result[1]["metadata"]["section_path"] == "Preamble Test > First Section"
+
+    def test_stub_section_merges_forward(self):
+        long_body = " ".join([f"word{i}" for i in range(60)])
+        content = f"---\ntitle: Stub Test\n---\n# Short Section\n\nJust a few words.\n\n# Long Section\n\n{long_body}"
+        result = chunk_page("test", content)
+        assert not any(c["metadata"]["section"] == "Short Section" for c in result)
+        assert any("Just a few words." in c["text"] for c in result)
+
+    def test_stub_section_trailing_merges_backward(self):
+        long_body = " ".join([f"word{i}" for i in range(60)])
+        content = f"---\ntitle: Trailing Stub\n---\n# Main Section\n\n{long_body}\n\n# Tail\n\nToo short."
+        result = chunk_page("test", content)
+        assert not any(c["metadata"]["section"] == "Tail" for c in result)
+        assert any("Too short." in c["text"] for c in result)
+
+    def test_page_title_falls_back_to_pagepath(self):
+        content = "# Section One\n\nSome content here in the section."
+        result = chunk_page("My/Wiki/Page", content)
+        assert result[0]["text"].startswith("[My/Wiki/Page > Section One]")
+        assert result[0]["metadata"]["section_path"] == "My/Wiki/Page > Section One"
+
+    def test_prefix_capped_at_three_levels(self):
+        content = "---\ntitle: Deep Doc\n---\n# L1\n\nL1 text.\n\n## L2\n\nL2 text.\n\n### L3\n\nL3 text.\n\n#### L4\n\nContent at level four."
+        result = chunk_page("test", content)
+        last = result[-1]
+        # Prefix should be capped: [Deep Doc > L1 > L2 > L3] not [Deep Doc > L1 > L2 > L3 > L4]
+        assert last["text"].startswith("[Deep Doc > L1 > L2 > L3]")
+        assert "> L4]" not in last["text"].split("]")[0]
+
+    def test_section_metadata_page_word_count_and_total_chunks(self):
+        paragraphs = [f"Paragraph {i}. " + " ".join(f"word{j}" for j in range(25)) for i in range(20)]
+        content = "\n\n".join(paragraphs)
+        result = chunk_page("test", content)
+        assert all("page_word_count" in c["metadata"] for c in result)
+        assert all("total_chunks" in c["metadata"] for c in result)
+        word_counts = set(c["metadata"]["page_word_count"] for c in result)
+        assert len(word_counts) == 1  # all same
+        total = set(c["metadata"]["total_chunks"] for c in result)
+        assert len(total) == 1
+        assert total.pop() == len(result)
+
+    def test_no_cross_section_overlap(self):
+        from otterwiki_semantic_search.chunking import OVERLAP_WORDS
+        section_body = " ".join([f"word{i}" for i in range(200)])
+        content = f"---\ntitle: Overlap Test\n---\n# Section A\n\n{section_body}\n\n# Section B\n\n{section_body}"
+        result = chunk_page("test", content)
+        # Find boundary where section changes
+        sections_a = [c for c in result if c["metadata"]["section"] == "Section A"]
+        sections_b = [c for c in result if c["metadata"]["section"] == "Section B"]
+        assert len(sections_a) > 0 and len(sections_b) > 0
+        last_a_words = sections_a[-1]["text"].split()[-OVERLAP_WORDS:]
+        first_b_text = sections_b[0]["text"]
+        # First chunk of Section B should NOT start with overlap from Section A
+        overlap_str = " ".join(last_a_words)
+        assert not first_b_text.startswith(f"[Overlap Test > Section B] {overlap_str}")
