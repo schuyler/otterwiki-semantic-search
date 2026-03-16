@@ -1,5 +1,8 @@
 """Integration tests using Flask test client + ChromaDB."""
 
+import time
+from unittest.mock import patch
+
 import pytest
 
 
@@ -87,11 +90,9 @@ class TestReindex:
         rv = test_client.post("/api/v1/reindex", headers=auth_headers)
         if rv.status_code == 503:
             pytest.skip("ChromaDB not available")
-        assert rv.status_code == 200
+        assert rv.status_code == 202
         data = rv.get_json()
-        assert data["status"] == "ok"
-        assert data["pages_indexed"] >= 0
-        assert data["chunks_created"] >= 0
+        assert data["status"] == "started"
 
     def test_reindex_requires_auth(self, test_client):
         rv = test_client.post("/api/v1/reindex")
@@ -124,13 +125,25 @@ class TestReindex:
             author=("Test", "test@test.com"),
         )
 
-        # Reindex
+        # Reindex — returns 202 immediately
         rv = test_client.post("/api/v1/reindex", headers=auth_headers)
         if rv.status_code == 503:
             pytest.skip("ChromaDB not available")
-        assert rv.status_code == 200
+        assert rv.status_code == 202
 
-        data = rv.get_json()
+        # Poll status until complete
+        complete = False
+        for _ in range(30):
+            time.sleep(0.5)
+            rv = test_client.get("/api/v1/reindex/status", headers=auth_headers)
+            if rv.status_code == 503:
+                pytest.skip("ChromaDB not available")
+            data = rv.get_json()
+            if data.get("status") == "complete":
+                complete = True
+                break
+
+        assert complete, f"Reindex did not complete in time; last status: {data}"
         assert data["pages_indexed"] >= 2
         assert data["chunks_created"] >= 2
 
@@ -147,3 +160,28 @@ class TestReindex:
         rv = test_client.get("/api/v1/chroma-status")
         data = rv.get_json()
         assert data["document_count"] > 0
+
+    def test_reindex_in_progress_returns_409(self, test_client, auth_headers):
+        """POST /reindex returns 409 when a reindex is already in progress."""
+        with patch(
+            "otterwiki_semantic_search.index.is_reindex_in_progress",
+            return_value=True,
+        ):
+            rv = test_client.post("/api/v1/reindex", headers=auth_headers)
+        if rv.status_code == 503:
+            pytest.skip("ChromaDB not available")
+        assert rv.status_code == 409
+
+    def test_reindex_status_idle(self, test_client, auth_headers):
+        """GET /reindex/status returns idle when no reindex has been run for this slug."""
+        # Clear per-wiki state so this slug has no history
+        import otterwiki_semantic_search.routes as routes_mod
+        with routes_mod._reindex_results_lock:
+            routes_mod._reindex_results.clear()
+
+        rv = test_client.get("/api/v1/reindex/status", headers=auth_headers)
+        if rv.status_code == 503:
+            pytest.skip("ChromaDB not available")
+        assert rv.status_code == 200
+        data = rv.get_json()
+        assert data["status"] == "idle"
