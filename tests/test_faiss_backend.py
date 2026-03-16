@@ -3,6 +3,8 @@
 import json
 import os
 import tempfile
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -267,6 +269,106 @@ class TestFAISSBackendPersistence:
         assert sidecar[0]["id"] == "page1::chunk_0"
         assert sidecar[0]["text"] == "Hello world"
         assert sidecar[0]["metadata"]["page_path"] == "page1"
+
+
+class TestFAISSBackendConcurrency:
+    def test_concurrent_query_and_upsert(self, faiss_dir, embedding_fn):
+        """Concurrent writes and reads must not raise IndexError or other exceptions."""
+        from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+
+        backend = FAISSBackend(faiss_dir, embedding_fn)
+        # Seed with some initial data so queries have something to search
+        backend.upsert(
+            ids=["seed::chunk_0"],
+            texts=["Seed document"],
+            metadatas=[{"page_path": "seed", "chunk_index": 0}],
+        )
+
+        errors = []
+        stop_event = threading.Event()
+
+        def writer():
+            chunk = 0
+            while not stop_event.is_set():
+                backend.upsert(
+                    ids=[f"page{chunk % 5}::chunk_0"],
+                    texts=[f"Document content {chunk}"],
+                    metadatas=[{"page_path": f"page{chunk % 5}", "chunk_index": 0}],
+                )
+                chunk += 1
+
+        def reader():
+            while not stop_event.is_set():
+                try:
+                    backend.query(query_texts=["some query text"], n_results=3)
+                except Exception as exc:
+                    errors.append(exc)
+
+        w = threading.Thread(target=writer, daemon=True)
+        r = threading.Thread(target=reader, daemon=True)
+        w.start()
+        r.start()
+        time.sleep(0.5)
+        stop_event.set()
+        w.join(timeout=5)
+        r.join(timeout=5)
+
+        assert not errors, f"Exceptions during concurrent access: {errors}"
+
+    def test_mismatch_detection_resets_on_load(self, faiss_dir, embedding_fn):
+        """If the sidecar has fewer entries than the FAISS index, the backend resets."""
+        from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+
+        backend = FAISSBackend(faiss_dir, embedding_fn)
+        backend.upsert(
+            ids=["page1::chunk_0", "page1::chunk_1", "page1::chunk_2"],
+            texts=["Alpha", "Beta", "Gamma"],
+            metadatas=[
+                {"page_path": "page1", "chunk_index": 0},
+                {"page_path": "page1", "chunk_index": 1},
+                {"page_path": "page1", "chunk_index": 2},
+            ],
+        )
+        assert backend.count() == 3
+
+        # Truncate sidecar to simulate a crash between index and sidecar writes
+        sidecar_path = os.path.join(faiss_dir, "embeddings.json")
+        with open(sidecar_path, "r") as f:
+            full_sidecar = json.load(f)
+        with open(sidecar_path, "w") as f:
+            json.dump(full_sidecar[:1], f)  # only 1 entry, index has 3
+
+        # Reload — mismatch guard should reset to empty
+        backend2 = FAISSBackend(faiss_dir, embedding_fn)
+        assert backend2.count() == 0
+
+    def test_mismatch_detection_resets_when_sidecar_longer(self, faiss_dir, embedding_fn):
+        """If the sidecar has more entries than the FAISS index, the backend resets."""
+        from otterwiki_semantic_search.backends.faiss_backend import FAISSBackend
+
+        backend = FAISSBackend(faiss_dir, embedding_fn)
+        backend.upsert(
+            ids=["page1::chunk_0", "page1::chunk_1"],
+            texts=["Alpha", "Beta"],
+            metadatas=[
+                {"page_path": "page1", "chunk_index": 0},
+                {"page_path": "page1", "chunk_index": 1},
+            ],
+        )
+        assert backend.count() == 2
+
+        # Append extra entries to sidecar to simulate index having fewer vectors
+        sidecar_path = os.path.join(faiss_dir, "embeddings.json")
+        with open(sidecar_path, "r") as f:
+            full_sidecar = json.load(f)
+        extra_entry = {"id": "page1::chunk_2", "text": "Gamma", "metadata": {"page_path": "page1", "chunk_index": 2}}
+        full_sidecar.append(extra_entry)
+        with open(sidecar_path, "w") as f:
+            json.dump(full_sidecar, f)
+
+        # Reload — mismatch guard should reset to empty
+        backend2 = FAISSBackend(faiss_dir, embedding_fn)
+        assert backend2.count() == 0
 
 
 class TestFAISSBackendDeduplication:

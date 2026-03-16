@@ -52,10 +52,25 @@ class FAISSBackend(VectorBackend):
         self._sidecar_path = os.path.join(index_dir, "embeddings.json")
         self._lock_path = os.path.join(index_dir, ".lock")
 
+        # Clean up orphaned temp files from interrupted saves
+        for tmp in (self._index_path + ".tmp", self._sidecar_path + ".tmp"):
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
         # Load existing index or create new
         if os.path.exists(self._index_path) and os.path.exists(self._sidecar_path):
-            self._index = faiss.read_index(self._index_path)
-            self._sidecar = self._load_sidecar()
+            loaded_index = faiss.read_index(self._index_path)
+            loaded_sidecar = self._load_sidecar()
+            if loaded_index.ntotal == len(loaded_sidecar):
+                self._index = loaded_index
+                self._sidecar = loaded_sidecar
+            else:
+                log.warning(
+                    "FAISS index/sidecar mismatch in %s (index.ntotal=%d, sidecar len=%d); resetting.",
+                    index_dir, loaded_index.ntotal, len(loaded_sidecar),
+                )
+                self._index = faiss.IndexFlatIP(self._dim)
+                self._sidecar = []
         else:
             self._index = faiss.IndexFlatIP(self._dim)
             self._sidecar = []  # list of entry dicts, indexed by FAISS position
@@ -63,7 +78,7 @@ class FAISSBackend(VectorBackend):
     def _load_sidecar(self):
         """Load the sidecar metadata file with a shared (read) file lock."""
         try:
-            lock_fd = open(self._lock_path, "w")
+            lock_fd = open(self._lock_path, "a")
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_SH)
                 with open(self._sidecar_path, "r") as f:
@@ -75,15 +90,26 @@ class FAISSBackend(VectorBackend):
             return []
 
     def _save(self):
-        """Persist the FAISS index and sidecar to disk with an exclusive file lock."""
+        """Persist the FAISS index and sidecar to disk with an exclusive file lock.
+
+        Writes to .tmp files first then renames atomically (POSIX) to avoid
+        leaving index and sidecar out of sync if a crash occurs mid-write.
+        Sidecar is renamed before index so that a partial crash always leaves
+        sidecar ahead of (or equal to) index, which the mismatch guard handles.
+        """
         import faiss
 
-        lock_fd = open(self._lock_path, "w")
+        tmp_index = self._index_path + ".tmp"
+        tmp_sidecar = self._sidecar_path + ".tmp"
+
+        lock_fd = open(self._lock_path, "a")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            faiss.write_index(self._index, self._index_path)
-            with open(self._sidecar_path, "w") as f:
+            faiss.write_index(self._index, tmp_index)
+            with open(tmp_sidecar, "w") as f:
                 json.dump(self._sidecar, f)
+            os.rename(tmp_sidecar, self._sidecar_path)
+            os.rename(tmp_index, self._index_path)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
@@ -188,7 +214,13 @@ class FAISSBackend(VectorBackend):
             Dict matching ChromaDB's result format:
             {ids, documents, metadatas, distances} — each a list of lists.
         """
-        if self._index.ntotal == 0:
+        # Snapshot index and sidecar under the lock so a concurrent upsert/delete
+        # cannot swap them between the ntotal check and the actual search.
+        with self._lock:
+            index = self._index
+            sidecar = list(self._sidecar)  # shallow copy
+
+        if index.ntotal == 0:
             empty = [[] for _ in range(len(query_texts or query_embeddings or [[]]))]
             return {"ids": empty, "documents": empty, "metadatas": empty, "distances": empty}
 
@@ -198,8 +230,8 @@ class FAISSBackend(VectorBackend):
         query_vectors = np.array(query_embeddings, dtype=np.float32)
 
         # Clamp n_results to available vectors
-        k = min(n_results, self._index.ntotal)
-        scores, indices = self._index.search(query_vectors, k)
+        k = min(n_results, index.ntotal)
+        scores, indices = index.search(query_vectors, k)
 
         result_ids = []
         result_docs = []
@@ -216,7 +248,7 @@ class FAISSBackend(VectorBackend):
                 if faiss_idx < 0:
                     continue  # FAISS returns -1 for missing results
                 score = float(scores[q_idx][r_idx])
-                entry = self._sidecar[faiss_idx]
+                entry = sidecar[faiss_idx]
                 q_ids.append(entry["id"])
                 q_docs.append(entry["text"])
                 q_metas.append(entry["metadata"])
