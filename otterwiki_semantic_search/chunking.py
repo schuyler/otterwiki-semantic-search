@@ -70,10 +70,14 @@ def _chunk_text(text: str) -> list:
     return chunks
 
 
+FENCE_RE = re.compile(r'^\s*(`{3,}|~{3,})')
+
+
 def _split_into_sections(body):
     """Split body into list of dicts: {level, heading, text}.
 
     Level 0 = preamble (text before any heading).
+    Heading lines inside fenced code blocks are ignored.
     """
     lines = body.split('\n')
     sections = []
@@ -81,21 +85,45 @@ def _split_into_sections(body):
     current_heading = ""
     current_lines = []
 
+    in_fence = False
+    fence_char = None
+    fence_len = 0
+
     for line in lines:
-        m = HEADING_RE.match(line)
-        if m:
-            # Save current section
-            text = "\n".join(current_lines).strip()
-            sections.append({
-                "level": current_level,
-                "heading": current_heading,
-                "text": text,
-            })
-            current_level = len(m.group(1))
-            current_heading = m.group(2).strip()
-            current_lines = []
-        else:
+        # Track fenced code block state
+        fm = FENCE_RE.match(line)
+        if fm:
+            fence_str = fm.group(1)
+            char = fence_str[0]
+            length = len(fence_str)
+            if not in_fence:
+                in_fence = True
+                fence_char = char
+                fence_len = length
+            elif char == fence_char and length >= fence_len:
+                in_fence = False
+                fence_char = None
+                fence_len = 0
+            # Either way, add line to current section content
             current_lines.append(line)
+            continue
+
+        if not in_fence:
+            m = HEADING_RE.match(line)
+            if m:
+                # Save current section
+                text = "\n".join(current_lines).strip()
+                sections.append({
+                    "level": current_level,
+                    "heading": current_heading,
+                    "text": text,
+                })
+                current_level = len(m.group(1))
+                current_heading = m.group(2).strip()
+                current_lines = []
+                continue
+
+        current_lines.append(line)
 
     # Final section
     text = "\n".join(current_lines).strip()
@@ -143,40 +171,53 @@ def _merge_stub_sections(sections):
 
     Only non-preamble (level > 0) sections are candidates for merging.
     Returns new list of section dicts with stubs merged.
+    Uses a single O(n) forward pass — no list.pop() inside loops.
     """
     if not sections:
         return sections
 
-    result = list(sections)
+    # Forward pass: stubs merge into the next substantial section.
+    # We defer each stub until we see a substantial section to absorb it.
+    # Trailing stubs are merged backward into the preceding substantial section.
+    merged = []
+    pending_stubs = []  # stubs waiting for a substantial section
 
-    # Forward pass: merge stubs into the next section (only if next section is substantial)
-    i = 0
-    while i < len(result) - 1:
-        sec = result[i]
-        next_sec = result[i + 1]
-        if (sec["level"] > 0
-                and _word_count(sec["text"]) < STUB_WORDS
-                and _word_count(next_sec["text"]) >= STUB_WORDS):
-            # Prepend text to next section, remove this section
-            if sec["text"]:
-                next_sec["text"] = sec["text"] + "\n\n" + next_sec["text"] if next_sec["text"] else sec["text"]
-            result.pop(i)
+    for section in sections:
+        is_stub = (section["level"] > 0
+                   and _word_count(section["text"]) < STUB_WORDS)
+
+        if is_stub:
+            pending_stubs.append(section)
         else:
-            i += 1
+            # Substantial (or preamble) section — prepend any pending stubs
+            if pending_stubs:
+                prefix_text = "\n\n".join(s["text"] for s in pending_stubs if s["text"])
+                if prefix_text:
+                    section = dict(section)
+                    section["text"] = (prefix_text + "\n\n" + section["text"]
+                                       if section["text"] else prefix_text)
+                pending_stubs = []
+            merged.append(section)
 
-    # Backward pass: merge trailing stub into preceding section (only if preceding is level > 0 and substantial)
-    if len(result) >= 2:
-        last = result[-1]
-        prev = result[-2]
-        if (last["level"] > 0
-                and _word_count(last["text"]) < STUB_WORDS
-                and prev["level"] > 0
-                and _word_count(prev["text"]) >= STUB_WORDS):
-            if last["text"]:
-                prev["text"] = prev["text"] + "\n\n" + last["text"] if prev["text"] else last["text"]
-            result.pop()
+    # Any remaining pending stubs merge backward into the last substantial section
+    if pending_stubs:
+        stub_text = "\n\n".join(s["text"] for s in pending_stubs if s["text"])
+        if stub_text:
+            # Find last substantial non-preamble section in merged
+            for idx in range(len(merged) - 1, -1, -1):
+                if merged[idx]["level"] > 0 and _word_count(merged[idx]["text"]) >= STUB_WORDS:
+                    merged[idx] = dict(merged[idx])
+                    merged[idx]["text"] = (merged[idx]["text"] + "\n\n" + stub_text
+                                           if merged[idx]["text"] else stub_text)
+                    break
+            else:
+                # No substantial section found — keep stubs as-is
+                merged.extend(pending_stubs)
+        else:
+            # Empty stubs — discard
+            pass
 
-    return result
+    return merged
 
 
 def chunk_page(pagepath, content):

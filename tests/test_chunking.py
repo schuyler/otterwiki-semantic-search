@@ -70,21 +70,24 @@ class TestChunkPage:
 
     def test_overlap_is_capped(self):
         """Overlap should never exceed OVERLAP_WORDS, even for short chunks."""
-        # Create content with many short paragraphs to produce short chunks
-        paragraphs = []
-        for i in range(30):
-            paragraphs.append(f"Short paragraph number {i} with a few words.")
-        content = "\n\n".join(paragraphs)
+        # Create content that exceeds MIN_CHUNK_WORDS so multiple chunks are produced.
+        # 5 paragraphs of ~160 words each, all under a single heading so they form
+        # one large section that gets split.
+        filler = " ".join(f"word{j}" for j in range(155))
+        paragraphs = [f"Paragraph {i}. {filler}" for i in range(5)]
+        section_body = "\n\n".join(paragraphs)
+        content = f"# Big Section\n\n{section_body}"
 
         result = chunk_page("test", content)
-        if len(result) > 1:
-            for i in range(1, len(result)):
-                # The overlap prefix should be at most OVERLAP_WORDS
-                # (it appears before the first \n\n in the chunk)
-                parts = result[i]["text"].split("\n\n", 1)
-                if len(parts) == 2:
-                    overlap_word_count = len(parts[0].split())
-                    assert overlap_word_count <= OVERLAP_WORDS
+        assert len(result) > 1, "Expected multiple chunks for overlap cap test"
+
+        for i in range(1, len(result)):
+            # Strip the [section_path] prefix before inspecting overlap
+            text_without_prefix = result[i]["text"].split("] ", 1)[-1]
+            parts = text_without_prefix.split("\n\n", 1)
+            if len(parts) == 2:
+                overlap_word_count = len(parts[0].split())
+                assert overlap_word_count <= OVERLAP_WORDS
 
     def test_frontmatter_only_no_body(self):
         content = "---\ntitle: Empty\n---\n"
@@ -199,6 +202,27 @@ class TestSectionAwareChunking:
         total = set(c["metadata"]["total_chunks"] for c in result)
         assert len(total) == 1
         assert total.pop() == len(result)
+
+    def test_heading_in_code_block_ignored(self):
+        """A heading-like line inside a fenced code block must not create a new section."""
+        content = (
+            "---\ntitle: Code Test\n---\n"
+            "# Real Section\n\n"
+            "Some intro text here.\n\n"
+            "```python\n"
+            "# This is a Python comment, not a heading\n"
+            "def foo():\n"
+            "    pass\n"
+            "```\n\n"
+            "More content after the fence."
+        )
+        result = chunk_page("test", content)
+        # Should be exactly one section (Real Section), not split on the comment
+        sections = set(c["metadata"]["section"] for c in result)
+        assert sections == {"Real Section"}, f"Unexpected sections: {sections}"
+        # The code block content should appear in the chunk text
+        full_text = " ".join(c["text"] for c in result)
+        assert "def foo():" in full_text
 
     def test_no_cross_section_overlap(self):
         from otterwiki_semantic_search.chunking import OVERLAP_WORDS

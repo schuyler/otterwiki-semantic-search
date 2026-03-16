@@ -168,7 +168,11 @@ def search(query, n=5, backend=None, max_chunks_per_page=2):
         distance = distances[i]
         text = documents[i]
 
-        snippet = text
+        # Strip the [section_path] prefix before computing snippet
+        if "] " in text:
+            snippet = text.split("] ", 1)[1]
+        else:
+            snippet = text
         if len(snippet) > 150:
             truncated = snippet[:150].rsplit(" ", 1)[0]
             snippet = truncated + "..."
