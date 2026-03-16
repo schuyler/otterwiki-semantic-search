@@ -133,11 +133,12 @@ class TestReindex:
 
         # Poll status until complete
         complete = False
+        data = {}
         for _ in range(30):
             time.sleep(0.5)
             rv = test_client.get("/api/v1/reindex/status", headers=auth_headers)
             if rv.status_code == 503:
-                pytest.skip("ChromaDB not available")
+                pytest.skip("ChromaDB not available during polling")
             data = rv.get_json()
             if data.get("status") == "complete":
                 complete = True
@@ -162,15 +163,49 @@ class TestReindex:
         assert data["document_count"] > 0
 
     def test_reindex_in_progress_returns_409(self, test_client, auth_headers):
-        """POST /reindex returns 409 when a reindex is already in progress."""
+        """POST /reindex returns 409 when a reindex is already in progress (slug-level check)."""
+        import otterwiki_semantic_search.routes as routes_mod
+        with routes_mod._reindex_results_lock:
+            routes_mod._reindex_results["default"] = {"status": "in_progress"}
+        try:
+            rv = test_client.post("/api/v1/reindex", headers=auth_headers)
+        finally:
+            with routes_mod._reindex_results_lock:
+                routes_mod._reindex_results.pop("default", None)
+        if rv.status_code == 503:
+            pytest.skip("ChromaDB not available")
+        assert rv.status_code == 409
+
+    def test_reindex_error_status_includes_message(self, test_client, auth_headers):
+        """When reindex_all raises, status should be 'error' with error_message field."""
+        import otterwiki_semantic_search.routes as routes_mod
+
+        with routes_mod._reindex_results_lock:
+            routes_mod._reindex_results.clear()
+
         with patch(
-            "otterwiki_semantic_search.index.is_reindex_in_progress",
-            return_value=True,
+            "otterwiki_semantic_search.index.reindex_all",
+            side_effect=RuntimeError("simulated reindex failure"),
         ):
             rv = test_client.post("/api/v1/reindex", headers=auth_headers)
         if rv.status_code == 503:
             pytest.skip("ChromaDB not available")
-        assert rv.status_code == 409
+        assert rv.status_code == 202
+
+        # Poll until terminal state
+        data = {}
+        for _ in range(30):
+            time.sleep(0.2)
+            rv = test_client.get("/api/v1/reindex/status", headers=auth_headers)
+            if rv.status_code == 503:
+                pytest.skip("ChromaDB not available during polling")
+            data = rv.get_json()
+            if data.get("status") in ("error", "complete"):
+                break
+
+        assert data.get("status") == "error", f"Expected error status, got: {data}"
+        assert "error_message" in data, f"Expected error_message field in: {data}"
+        assert "simulated reindex failure" in data["error_message"]
 
     def test_reindex_status_idle(self, test_client, auth_headers):
         """GET /reindex/status returns idle when no reindex has been run for this slug."""

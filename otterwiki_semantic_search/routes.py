@@ -29,13 +29,17 @@ def _resolve_backend():
 
 
 def _slug_for_current_request(storage):
-    """Derive wiki slug from current request's storage."""
+    """Derive wiki slug from current request's storage.
+
+    Returns None on error so callers can detect resolution failure and return
+    a 500 rather than silently collapsing all wikis under a "default" key.
+    """
     registry = _state.get("registry")
     if registry is not None and storage is not None:
         try:
             return registry.slug_for_storage(storage)
         except RuntimeError:
-            pass
+            return None
     return "default"
 
 
@@ -73,15 +77,17 @@ def reindex():
     if not _state.get("available"):
         return jsonify({"error": "Vector backend is not available"}), 503
 
-    if index.is_reindex_in_progress():
-        return jsonify({"error": "Reindex already in progress"}), 409
-
     storage = _state.get("storage")
     app = _state.get("app")
     app_config = app.config if app else None
 
     backend = _resolve_backend()
+    if backend is None:
+        return jsonify({"error": "No vector backend available for this wiki"}), 503
+
     slug = _slug_for_current_request(storage)
+    if slug is None:
+        return jsonify({"error": "Cannot determine wiki slug for current request"}), 500
 
     with _reindex_results_lock:
         current = _reindex_results.get(slug, {})
@@ -89,7 +95,7 @@ def reindex():
             return jsonify({"error": "Reindex already in progress"}), 409
         _reindex_results[slug] = {
             "status": "in_progress",
-            "started_at": datetime.datetime.utcnow().isoformat(),
+            "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
     def _run_reindex():
@@ -100,14 +106,15 @@ def reindex():
                     "status": "complete",
                     "pages_indexed": result.get("pages_indexed", 0),
                     "chunks_created": result.get("chunks_created", 0),
-                    "completed_at": datetime.datetime.utcnow().isoformat(),
+                    "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
-        except Exception:
+        except Exception as e:
             log.exception("Background reindex failed for slug %s", slug)
             with _reindex_results_lock:
                 _reindex_results[slug] = {
                     "status": "error",
-                    "completed_at": datetime.datetime.utcnow().isoformat(),
+                    "error_message": str(e),
+                    "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
 
     t = threading.Thread(target=_run_reindex, daemon=True)
@@ -116,7 +123,6 @@ def reindex():
     return jsonify({"status": "started"}), 202
 
 
-@search_bp.route("/reindex", methods=["GET"])
 @search_bp.route("/reindex/status", methods=["GET"])
 def reindex_status():
     if not _state.get("available"):
