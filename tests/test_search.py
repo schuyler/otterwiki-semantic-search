@@ -69,6 +69,28 @@ class TestSearchEnrichment:
         assert results[0]["section"] is None
         assert results[0]["section_path"] is None
 
+    def test_snippet_strips_prefix_with_brackets_in_title(self):
+        # section_path contains ']' — old split-on-"] " approach would mangle this
+        section_path = "Python [v3] Guide > Intro"
+        prefix = f"[{section_path}] "
+        body = "This is the intro content for Python v3."
+        doc_text = prefix + body
+        meta = {
+            "page_path": "Python [v3] Guide",
+            "chunk_index": 0,
+            "section": "Intro",
+            "section_path": section_path,
+            "total_chunks": 1,
+            "page_word_count": 100,
+        }
+        backend = _mock_backend([("Python [v3] Guide::chunk_0", doc_text, meta, 0.1)])
+        results = idx.search("q", n=5, backend=backend)
+        assert len(results) == 1
+        # Snippet must equal the body, not a mangled fragment
+        assert results[0]["snippet"] == body
+        # Full text is preserved
+        assert results[0]["text"] == doc_text
+
 
 class TestConfigurableDedup:
     def _make_page_rows(self, page, count, base_dist=0.1):

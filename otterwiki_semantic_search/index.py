@@ -169,10 +169,13 @@ def search(query, n=5, backend=None, max_chunks_per_page=2):
         text = documents[i]
 
         # Strip the [section_path] prefix before computing snippet
-        if "] " in text:
-            snippet = text.split("] ", 1)[1]
+        section_path = meta.get("section_path")
+        if section_path:
+            prefix = f"[{section_path}] "
+            snippet_text = text[len(prefix):] if text.startswith(prefix) else text
         else:
-            snippet = text
+            snippet_text = text
+        snippet = snippet_text
         if len(snippet) > 150:
             truncated = snippet[:150].rsplit(" ", 1)[0]
             snippet = truncated + "..."
