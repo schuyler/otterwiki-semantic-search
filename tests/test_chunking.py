@@ -13,7 +13,8 @@ class TestChunkPage:
         result = chunk_page("test/page", content)
         assert len(result) == 1
         assert result[0]["id"] == "test/page::chunk_0"
-        assert result[0]["text"] == content
+        assert result[0]["text"].startswith("[test/page] ")
+        assert content in result[0]["text"]
         assert result[0]["metadata"]["page_path"] == "test/page"
         assert result[0]["metadata"]["chunk_index"] == 0
 
@@ -21,7 +22,8 @@ class TestChunkPage:
         content = "---\ntitle: My Page\ncategory: notes\ntags:\n  - foo\n  - bar\n---\nBody text here."
         result = chunk_page("test", content)
         assert len(result) == 1
-        assert result[0]["text"] == "Body text here."
+        assert result[0]["text"].startswith("[My Page] ")
+        assert "Body text here." in result[0]["text"]
         assert result[0]["metadata"]["title"] == "My Page"
         assert result[0]["metadata"]["category"] == "notes"
         assert result[0]["metadata"]["tags"] == "foo, bar"
