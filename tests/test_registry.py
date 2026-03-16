@@ -172,6 +172,38 @@ class TestMultiTenantIndexOperations:
         assert b1.count() > 0
 
 
+class TestSlugFromPath:
+    """Test _slug_from_path handles VPS and legacy path layouts."""
+
+    def test_vps_path_pattern(self, registry):
+        """VPS layout: /srv/data/wikis/{slug}/repo -> {slug}"""
+        assert registry._slug_from_path("/srv/data/wikis/research/repo") == "research"
+
+    def test_legacy_path_pattern(self, registry):
+        """Legacy layout: /srv/wikis/{slug} -> {slug}"""
+        assert registry._slug_from_path("/srv/wikis/dev") == "dev"
+
+    def test_slug_for_storage_vps_path(self, registry):
+        """`slug_for_storage` derives correct slug from VPS path."""
+        mock_storage = MagicMock()
+        mock_storage.path = "/srv/data/wikis/research/repo"
+        assert registry.slug_for_storage(mock_storage) == "research"
+
+    def test_resolve_backend_returns_none_outside_request(self, registry, monkeypatch):
+        """`_resolve_backend` returns None (not stale backend) when outside request in FAISS mode."""
+        import otterwiki_semantic_search
+        from otterwiki_semantic_search import _state
+
+        # Set up registry in state, clear storage (outside request context)
+        monkeypatch.setitem(_state, "registry", registry)
+        monkeypatch.setitem(_state, "storage", None)
+        monkeypatch.setitem(_state, "backend", MagicMock())  # stale backend
+
+        hook = otterwiki_semantic_search.HookListener()
+        result = hook._resolve_backend()
+        assert result is None
+
+
 class TestFileLocking:
     """Verify that FAISS backend uses file locking."""
 

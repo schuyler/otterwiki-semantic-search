@@ -7,7 +7,6 @@ from otterwiki_semantic_search.chunking import chunk_page
 
 log = logging.getLogger(__name__)
 
-_write_lock = threading.Lock()
 _reindex_lock = threading.Lock()
 
 MAX_SEARCH_RESULTS = 50
@@ -62,19 +61,18 @@ def upsert_page(pagepath, content, backend=None):
             texts = [c["text"] for c in chunks]
             embeddings = embedding_fn.embed(texts)
 
-        with _write_lock:
-            # Delete existing chunks for this page
-            try:
-                backend.delete(where={"page_path": pagepath})
-            except Exception:
-                log.debug("Delete before upsert failed for %s (may be empty)", pagepath)
+        # Delete existing chunks for this page
+        try:
+            backend.delete(where={"page_path": pagepath})
+        except Exception:
+            log.debug("Delete before upsert failed for %s (may be empty)", pagepath)
 
-            backend.upsert(
-                ids=[c["id"] for c in chunks],
-                texts=[c["text"] for c in chunks],
-                metadatas=[c["metadata"] for c in chunks],
-                embeddings=embeddings,
-            )
+        backend.upsert(
+            ids=[c["id"] for c in chunks],
+            texts=[c["text"] for c in chunks],
+            metadatas=[c["metadata"] for c in chunks],
+            embeddings=embeddings,
+        )
         log.debug("Indexed %d chunks for %s", len(chunks), pagepath)
     except Exception:
         log.exception("Failed to upsert page %s", pagepath)
@@ -93,8 +91,7 @@ def delete_page(pagepath, backend=None):
         return
 
     try:
-        with _write_lock:
-            backend.delete(where={"page_path": pagepath})
+        backend.delete(where={"page_path": pagepath})
         log.debug("Deleted chunks for %s", pagepath)
     except Exception:
         log.exception("Failed to delete page %s", pagepath)
@@ -269,11 +266,10 @@ def reindex_all(storage, app_config=None, backend=None):
                 all_chunks.extend(chunks)
                 pages_indexed += 1
 
-        # Phase 2: Reset and rebuild under write lock
-        with _write_lock:
-            backend.reset()
-            if all_chunks:
-                _batch_upsert(backend, all_chunks, embedding_fn)
+        # Phase 2: Reset and rebuild
+        backend.reset()
+        if all_chunks:
+            _batch_upsert(backend, all_chunks, embedding_fn)
 
         chunks_created = len(all_chunks)
         log.info("Reindex complete: %d pages, %d chunks", pages_indexed, chunks_created)

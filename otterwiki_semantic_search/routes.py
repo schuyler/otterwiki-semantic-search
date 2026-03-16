@@ -1,9 +1,13 @@
 """API routes for semantic search."""
 
+import logging
+
 from flask import jsonify, request
 
 from otterwiki_semantic_search import _state, search_bp
 from otterwiki_semantic_search import index
+
+log = logging.getLogger(__name__)
 
 
 def _resolve_backend():
@@ -13,8 +17,9 @@ def _resolve_backend():
         try:
             return registry.get_for_current_request()
         except RuntimeError:
-            pass
-    return _state.get("backend")
+            log.warning("Cannot resolve wiki backend for current request")
+            return None
+    return _state.get("backend")  # ChromaDB / single-tenant only
 
 
 @search_bp.route("/semantic-search", methods=["GET"])

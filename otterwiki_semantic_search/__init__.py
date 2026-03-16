@@ -115,12 +115,6 @@ def _init_faiss():
     _state["registry"] = registry
     _state["embedding_fn"] = embedding_fn
 
-    # Create the default backend for the current wiki (backward compat)
-    storage = _state.get("storage")
-    if storage is not None:
-        backend = registry.get_for_current_request()
-        _state["backend"] = backend
-
     _state["available"] = True
     log.info("FAISS multi-tenant registry initialized (base_dir: %s)", base_dir)
 
@@ -166,8 +160,9 @@ class HookListener:
             try:
                 return registry.get_for_current_request()
             except RuntimeError:
-                pass
-        return _state.get("backend")
+                log.warning("Cannot resolve wiki backend for current request")
+                return None
+        return _state.get("backend")  # ChromaDB / single-tenant only
 
     @hookimpl
     def page_saved(self, pagepath, content, author, message):

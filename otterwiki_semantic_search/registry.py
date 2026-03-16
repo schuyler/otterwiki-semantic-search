@@ -37,6 +37,18 @@ class BackendRegistry:
     def embedding_fn(self):
         return self._embedding_fn
 
+    def _slug_from_path(self, path):
+        """Derive wiki slug from a storage path.
+
+        Handles two layouts:
+          /srv/data/wikis/{slug}/repo  -> {slug}  (VPS standard)
+          /srv/wikis/{slug}            -> {slug}  (legacy / test)
+        """
+        name = os.path.basename(path)
+        if name == "repo":
+            name = os.path.basename(os.path.dirname(path))
+        return name
+
     def get(self, slug):
         """Get or create a FAISSBackend for the given wiki slug.
 
@@ -62,6 +74,12 @@ class BackendRegistry:
             backend = FAISSBackend(index_dir, self._embedding_fn)
             self._backends[slug] = backend
             log.info("Created FAISS backend for wiki '%s' at %s", slug, index_dir)
+            if backend.count() == 0:
+                from otterwiki_semantic_search import _state
+                storage = _state.get("storage")
+                app = _state.get("app")
+                if storage is not None and self._slug_from_path(storage.path) == slug:
+                    self._schedule_reindex(slug, backend, storage, app)
             return backend
 
     def get_for_current_request(self):
@@ -82,7 +100,7 @@ class BackendRegistry:
         if storage is None:
             raise RuntimeError("No storage in _state — cannot resolve wiki slug")
 
-        slug = os.path.basename(storage.path)
+        slug = self._slug_from_path(storage.path)
         if not slug:
             raise RuntimeError(f"Cannot derive slug from storage path: {storage.path}")
 
@@ -104,10 +122,26 @@ class BackendRegistry:
         if storage is None:
             raise RuntimeError("No storage available to derive slug")
 
-        slug = os.path.basename(storage.path)
+        slug = self._slug_from_path(storage.path)
         if not slug:
             raise RuntimeError(f"Cannot derive slug from storage path: {storage.path}")
         return slug
+
+    def _schedule_reindex(self, slug, backend, storage, app):
+        import threading
+        from otterwiki_semantic_search import index
+
+        def _do_reindex():
+            app_config = app.config if app else None
+            log.info("Auto-reindexing new wiki '%s'", slug)
+            try:
+                index.reindex_all(storage, app_config, backend=backend)
+                log.info("Auto-reindex complete for wiki '%s'", slug)
+            except Exception:
+                log.exception("Auto-reindex failed for wiki '%s'", slug)
+
+        t = threading.Thread(target=_do_reindex, daemon=True, name=f"reindex-{slug}")
+        t.start()
 
     def all_backends(self):
         """Return a dict of slug -> backend for all initialized backends."""
