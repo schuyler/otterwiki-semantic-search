@@ -283,8 +283,9 @@ class FAISSBackend(VectorBackend):
     def reindex_atomic(self, chunks, embedding_fn=None):
         """Reset and rebuild the index atomically under a single lock acquisition.
 
-        Prevents concurrent upsert_page calls from interleaving between
-        reset and the bulk insert.
+        Embedding is computed outside the lock (slow I/O). Only the index
+        reset + vector insert + save is locked, preventing concurrent
+        upsert_page calls from interleaving.
 
         Args:
             chunks: List of chunk dicts with keys id, text, metadata.
@@ -293,20 +294,27 @@ class FAISSBackend(VectorBackend):
         import faiss
 
         ef = embedding_fn or self._embedding_fn
+
+        # Phase 1: compute embeddings outside the lock (slow)
+        all_vectors = []
+        batch_size = 5000
+        if chunks:
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i : i + batch_size]
+                embeddings = ef.embed([c["text"] for c in batch])
+                all_vectors.extend(embeddings)
+
+        # Phase 2: rebuild index under lock (fast)
         with self._lock:
             self._index = faiss.IndexFlatIP(self._dim)
             self._sidecar = []
             if chunks:
-                batch_size = 5000
-                for i in range(0, len(chunks), batch_size):
-                    batch = chunks[i : i + batch_size]
-                    embeddings = ef.embed([c["text"] for c in batch])
-                    vectors = np.array(embeddings, dtype=np.float32)
-                    self._index.add(vectors)
-                    for j, chunk in enumerate(batch):
-                        self._sidecar.append({
-                            "id": chunk["id"],
-                            "text": chunk["text"],
-                            "metadata": chunk["metadata"],
-                        })
+                vectors = np.array(all_vectors, dtype=np.float32)
+                self._index.add(vectors)
+                for chunk in chunks:
+                    self._sidecar.append({
+                        "id": chunk["id"],
+                        "text": chunk["text"],
+                        "metadata": chunk["metadata"],
+                    })
             self._save()
