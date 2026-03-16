@@ -44,9 +44,13 @@ class BackendRegistry:
           /srv/data/wikis/{slug}/repo  -> {slug}  (VPS standard)
           /srv/wikis/{slug}            -> {slug}  (legacy / test)
         """
+        path = os.path.normpath(path)
         name = os.path.basename(path)
         if name == "repo":
-            name = os.path.basename(os.path.dirname(path))
+            parent = os.path.dirname(path)
+            parent_name = os.path.basename(parent)
+            if parent_name:
+                name = parent_name
         return name
 
     def get(self, slug):
@@ -128,7 +132,6 @@ class BackendRegistry:
         return slug
 
     def _schedule_reindex(self, slug, backend, storage, app):
-        import threading
         from otterwiki_semantic_search import index
 
         def _do_reindex():

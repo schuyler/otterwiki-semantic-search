@@ -1,20 +1,22 @@
 """Vector index operations — backend-agnostic."""
 
 import logging
-import threading
 
 from otterwiki_semantic_search.chunking import chunk_page
 
 log = logging.getLogger(__name__)
-
-_reindex_lock = threading.Lock()
 
 MAX_SEARCH_RESULTS = 50
 _UPSERT_BATCH_SIZE = 5000
 
 
 def _get_backend():
-    """Get the backend, preferring registry resolution for multi-tenant."""
+    """Get the backend, preferring registry resolution for multi-tenant.
+
+    Returns None when a registry is configured but resolution fails (e.g.
+    outside a request context). Falls back to _state["backend"] only when
+    no registry is configured (ChromaDB / single-tenant path).
+    """
     from otterwiki_semantic_search import _state
 
     registry = _state.get("registry")
@@ -22,7 +24,7 @@ def _get_backend():
         try:
             return registry.get_for_current_request()
         except RuntimeError:
-            pass
+            return None
     return _state.get("backend")
 
 
@@ -204,8 +206,20 @@ def search(query, n=5, backend=None, max_chunks_per_page=2):
     return all_results[:n]
 
 
-def is_reindex_in_progress():
-    return _reindex_lock.locked()
+def is_reindex_in_progress(backend=None):
+    """Return True if a reindex is currently in progress for the given backend.
+
+    Args:
+        backend: Optional explicit backend. If None, resolved from registry.
+    """
+    if backend is None:
+        backend = _get_backend()
+    if backend is None:
+        return False
+    reindex_lock = getattr(backend, "_reindex_lock", None)
+    if reindex_lock is None:
+        return False
+    return reindex_lock.locked()
 
 
 def _batch_upsert(backend, chunks, embedding_fn=None):
@@ -236,9 +250,16 @@ def reindex_all(storage, app_config=None, backend=None):
     if backend is None:
         return {"pages_indexed": 0, "chunks_created": 0}
 
-    acquired = _reindex_lock.acquire(blocking=False)
+    # Use per-backend reindex lock to avoid cross-wiki interference.
+    reindex_lock = getattr(backend, "_reindex_lock", None)
+    if reindex_lock is None:
+        # Backend doesn't support per-instance locking (e.g. ChromaDB); skip guard.
+        acquired = True
+    else:
+        acquired = reindex_lock.acquire(blocking=False)
+
     if not acquired:
-        log.info("Reindex already in progress, skipping")
+        log.info("Reindex already in progress for this backend, skipping")
         return {"pages_indexed": 0, "chunks_created": 0, "skipped": True}
 
     try:
@@ -266,10 +287,14 @@ def reindex_all(storage, app_config=None, backend=None):
                 all_chunks.extend(chunks)
                 pages_indexed += 1
 
-        # Phase 2: Reset and rebuild
-        backend.reset()
-        if all_chunks:
-            _batch_upsert(backend, all_chunks, embedding_fn)
+        # Phase 2: Atomically reset and rebuild under backend._lock (FAISS path)
+        # or fall back to separate reset+batch_upsert for other backends.
+        if hasattr(backend, "reindex_atomic"):
+            backend.reindex_atomic(all_chunks, embedding_fn)
+        else:
+            backend.reset()
+            if all_chunks:
+                _batch_upsert(backend, all_chunks, embedding_fn)
 
         chunks_created = len(all_chunks)
         log.info("Reindex complete: %d pages, %d chunks", pages_indexed, chunks_created)
@@ -278,7 +303,8 @@ def reindex_all(storage, app_config=None, backend=None):
         log.exception("Reindex failed")
         return {"pages_indexed": 0, "chunks_created": 0}
     finally:
-        _reindex_lock.release()
+        if reindex_lock is not None:
+            reindex_lock.release()
 
 
 def filepath_to_pagepath(filepath, retain_case=False):

@@ -44,6 +44,7 @@ class FAISSBackend(VectorBackend):
         self._embedding_fn = embedding_fn
         self._dim = dimensionality or embedding_fn.dimensionality
         self._lock = threading.Lock()
+        self._reindex_lock = threading.Lock()
 
         os.makedirs(index_dir, exist_ok=True)
 
@@ -245,4 +246,35 @@ class FAISSBackend(VectorBackend):
         with self._lock:
             self._index = faiss.IndexFlatIP(self._dim)
             self._sidecar = []
+            self._save()
+
+    def reindex_atomic(self, chunks, embedding_fn=None):
+        """Reset and rebuild the index atomically under a single lock acquisition.
+
+        Prevents concurrent upsert_page calls from interleaving between
+        reset and the bulk insert.
+
+        Args:
+            chunks: List of chunk dicts with keys id, text, metadata.
+            embedding_fn: Optional EmbeddingFunction. Falls back to self._embedding_fn.
+        """
+        import faiss
+
+        ef = embedding_fn or self._embedding_fn
+        with self._lock:
+            self._index = faiss.IndexFlatIP(self._dim)
+            self._sidecar = []
+            if chunks:
+                batch_size = 5000
+                for i in range(0, len(chunks), batch_size):
+                    batch = chunks[i : i + batch_size]
+                    embeddings = ef.embed([c["text"] for c in batch])
+                    vectors = np.array(embeddings, dtype=np.float32)
+                    self._index.add(vectors)
+                    for j, chunk in enumerate(batch):
+                        self._sidecar.append({
+                            "id": chunk["id"],
+                            "text": chunk["text"],
+                            "metadata": chunk["metadata"],
+                        })
             self._save()

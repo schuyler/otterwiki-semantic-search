@@ -189,6 +189,19 @@ class TestSlugFromPath:
         mock_storage.path = "/srv/data/wikis/research/repo"
         assert registry.slug_for_storage(mock_storage) == "research"
 
+    def test_trailing_slash(self, registry):
+        """Trailing slash is stripped before deriving the slug."""
+        assert registry._slug_from_path("/srv/wikis/dev/") == "dev"
+
+    def test_single_component_path(self, registry):
+        """A path with no parent directory returns the single component."""
+        assert registry._slug_from_path("/repo") == "repo"
+
+    def test_empty_path(self, registry):
+        """Empty string normalises to '.' and returns '.'."""
+        result = registry._slug_from_path("")
+        assert result == "."
+
     def test_resolve_backend_returns_none_outside_request(self, registry, monkeypatch):
         """`_resolve_backend` returns None (not stale backend) when outside request in FAISS mode."""
         import otterwiki_semantic_search
