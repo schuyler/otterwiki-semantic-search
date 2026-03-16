@@ -151,26 +151,36 @@ def search(query, n=5, backend=None):
     if not results or not results["ids"] or not results["ids"][0]:
         return []
 
-    # Deduplicate by page_path, keeping the chunk with lowest distance
-    seen = {}
     ids = results["ids"][0]
     documents = results["documents"][0]
     metadatas = results["metadatas"][0]
     distances = results["distances"][0]
 
+    # Deduplicate by page_path, keeping the chunk with lowest distance
+    seen = {}
     for i, doc_id in enumerate(ids):
-        page_path = metadatas[i]["page_path"]
+        meta = metadatas[i]
+        page_path = meta["page_path"]
         distance = distances[i]
+        text = documents[i]
+
+        snippet = text
+        if len(snippet) > 150:
+            truncated = snippet[:150].rsplit(" ", 1)[0]
+            snippet = truncated + "..."
+
         if page_path not in seen or distance < seen[page_path]["distance"]:
-            snippet = documents[i]
-            if len(snippet) > 150:
-                truncated = snippet[:150].rsplit(" ", 1)[0]
-                snippet = truncated + "..."
             seen[page_path] = {
                 "name": page_path,
                 "path": page_path,
+                "text": text,
                 "snippet": snippet,
                 "distance": distance,
+                "section": meta.get("section"),
+                "section_path": meta.get("section_path"),
+                "chunk_index": meta.get("chunk_index"),
+                "total_chunks": meta.get("total_chunks"),
+                "page_word_count": meta.get("page_word_count"),
             }
 
     results_list = sorted(seen.values(), key=lambda x: x["distance"])
