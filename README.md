@@ -35,7 +35,11 @@ curl -X POST -H "Authorization: Bearer $OTTERWIKI_API_KEY" \
 
 After that, the index stays current via page lifecycle hooks (if your otterwiki
 version supports them) and a background sync thread that polls git for changes
-every 60 seconds.
+every 60 seconds. The plugin also implements the `repository_changed` hook, so
+direct git pushes (e.g. via robot.wtf's git-over-HTTPS feature) trigger
+incremental reindexing automatically. Note: only the last commit's changed
+files are reindexed per push — a force-push or multi-commit push can leave
+earlier pages stale until the next full reindex.
 
 ## Installation
 

@@ -202,6 +202,26 @@ class HookListener:
                 "Hook page_renamed failed for %s -> %s", old_pagepath, new_pagepath
             )
 
+    @hookimpl
+    def repository_changed(self, changed_files):
+        backend = self._resolve_backend()
+        storage = _state.get("storage")
+
+        for filepath in changed_files:
+            if not filepath.endswith(".md"):
+                continue
+            try:
+                from otterwiki_semantic_search import index
+
+                pagepath = filepath[:-3]  # strip .md to get page path
+                if storage and storage.exists(filepath):
+                    content = storage.load(filepath)
+                    index.upsert_page(pagepath, content, backend=backend)
+                else:
+                    index.delete_page(pagepath, backend=backend)
+            except Exception:
+                log.exception("Hook repository_changed failed for %s", filepath)
+
 
 class OtterwikiSemanticSearchPlugin:
     @hookimpl
