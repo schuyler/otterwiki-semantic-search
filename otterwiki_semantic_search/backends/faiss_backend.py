@@ -214,52 +214,54 @@ class FAISSBackend(VectorBackend):
             Dict matching ChromaDB's result format:
             {ids, documents, metadatas, distances} — each a list of lists.
         """
-        # Snapshot index and sidecar under the lock so a concurrent upsert/delete
-        # cannot swap them between the ntotal check and the actual search.
-        with self._lock:
-            index = self._index
-            sidecar = list(self._sidecar)  # shallow copy
-
-        if index.ntotal == 0:
-            empty = [[] for _ in range(len(query_texts or query_embeddings or [[]]))]
-            return {"ids": empty, "documents": empty, "metadatas": empty, "distances": empty}
-
+        # Compute embeddings before acquiring the lock — embedding can involve
+        # network I/O and should not hold the index lock.
         if query_texts is not None:
             query_embeddings = self._embedding_fn.embed(query_texts)
 
-        query_vectors = np.array(query_embeddings, dtype=np.float32)
+        # Hold the lock across the entire consistency-critical section:
+        # ntotal check, index.search(), and all sidecar reads.  A concurrent
+        # upsert cannot mutate the index or sidecar while we hold this lock,
+        # so index.ntotal, the search results, and the sidecar are guaranteed
+        # to be in sync throughout.
+        with self._lock:
+            if self._index.ntotal == 0:
+                empty = [[] for _ in range(len(query_texts or query_embeddings or [[]]))]
+                return {"ids": empty, "documents": empty, "metadatas": empty, "distances": empty}
 
-        # Clamp n_results to available vectors
-        k = min(n_results, index.ntotal)
-        scores, indices = index.search(query_vectors, k)
+            query_vectors = np.array(query_embeddings, dtype=np.float32)
 
-        result_ids = []
-        result_docs = []
-        result_metas = []
-        result_distances = []
+            # Clamp n_results to available vectors
+            k = min(n_results, self._index.ntotal)
+            scores, indices = self._index.search(query_vectors, k)
 
-        for q_idx in range(len(query_vectors)):
-            q_ids = []
-            q_docs = []
-            q_metas = []
-            q_dists = []
-            for r_idx in range(k):
-                faiss_idx = int(indices[q_idx][r_idx])
-                if faiss_idx < 0:
-                    continue  # FAISS returns -1 for missing results
-                score = float(scores[q_idx][r_idx])
-                entry = sidecar[faiss_idx]
-                q_ids.append(entry["id"])
-                q_docs.append(entry["text"])
-                q_metas.append(entry["metadata"])
-                # Convert inner product similarity to distance-like metric.
-                # For normalized vectors, IP = cosine similarity.
-                # distance = 1 - similarity, so lower = more similar.
-                q_dists.append(1.0 - score)
-            result_ids.append(q_ids)
-            result_docs.append(q_docs)
-            result_metas.append(q_metas)
-            result_distances.append(q_dists)
+            result_ids = []
+            result_docs = []
+            result_metas = []
+            result_distances = []
+
+            for q_idx in range(len(query_vectors)):
+                q_ids = []
+                q_docs = []
+                q_metas = []
+                q_dists = []
+                for r_idx in range(k):
+                    faiss_idx = int(indices[q_idx][r_idx])
+                    if faiss_idx < 0:
+                        continue  # FAISS returns -1 for missing results
+                    score = float(scores[q_idx][r_idx])
+                    entry = self._sidecar[faiss_idx]
+                    q_ids.append(entry["id"])
+                    q_docs.append(entry["text"])
+                    q_metas.append(entry["metadata"])
+                    # Convert inner product similarity to distance-like metric.
+                    # For normalized vectors, IP = cosine similarity.
+                    # distance = 1 - similarity, so lower = more similar.
+                    q_dists.append(1.0 - score)
+                result_ids.append(q_ids)
+                result_docs.append(q_docs)
+                result_metas.append(q_metas)
+                result_distances.append(q_dists)
 
         return {
             "ids": result_ids,
@@ -269,7 +271,8 @@ class FAISSBackend(VectorBackend):
         }
 
     def count(self):
-        return self._index.ntotal
+        with self._lock:
+            return self._index.ntotal
 
     def reset(self):
         """Delete all data and recreate empty index."""
