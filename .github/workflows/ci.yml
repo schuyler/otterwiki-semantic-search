@@ -18,9 +18,11 @@ jobs:
         run: |
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
-      - name: Install otterwiki
-        run: pip install "git+https://github.com/schuyler/otterwiki.git@wikibot-io"
-      - name: Install package with dev and chroma extras
-        run: pip install -e ".[dev,chroma]"
+      # One command, so pip can't replace the git otterwiki with an older
+      # PyPI release while resolving chromadb's dependencies.
+      - name: Install package and upstream otterwiki
+        run: pip install -e ".[dev,chroma,faiss]" "otterwiki @ git+https://github.com/redimp/otterwiki.git@main"
+      - name: Show otterwiki version
+        run: python -c 'import importlib.metadata as m; print("otterwiki", m.version("otterwiki"))'
       - name: Run tests
         run: pytest tests/
