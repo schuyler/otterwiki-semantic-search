@@ -287,8 +287,9 @@ def reindex_all(storage, app_config=None, backend=None):
                 all_chunks.extend(chunks)
                 pages_indexed += 1
 
-        # Phase 2: Atomically reset and rebuild under backend._lock (FAISS path)
-        # or fall back to separate reset+batch_upsert for other backends.
+        # Phase 2: Let the backend replace its contents itself if it can
+        # (FAISS: under backend._lock; ChromaDB: upsert then prune, without
+        # dropping the collection), else fall back to reset+batch_upsert.
         if hasattr(backend, "reindex_atomic"):
             backend.reindex_atomic(all_chunks, embedding_fn)
         else:

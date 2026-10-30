@@ -151,7 +151,9 @@ def chroma_status():
         try:
             status["document_count"] = backend.count()
         except Exception:
-            status["document_count"] = 0
+            log.exception("Failed to count documents in vector backend")
+            status["status"] = "error"
+            status["document_count"] = None
     else:
         status["document_count"] = 0
 

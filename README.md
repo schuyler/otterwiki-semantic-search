@@ -72,7 +72,7 @@ All via environment variables. The only required one is `OTTERWIKI_API_KEY`
 
 - `GET /api/v1/semantic-search?q=<query>&n=5` — search by similarity
 - `POST /api/v1/reindex` — rebuild the entire index
-- `GET /api/v1/chroma-status` — collection status and document count (no auth required)
+- `GET /api/v1/chroma-status` — collection status and document count (no auth required; `status` is `"error"` if the backend call fails)
 
 ## How it works
 
