@@ -76,6 +76,27 @@ class TestReindexAcrossWorkers:
         doc = backend.collection.get(ids=["a::chunk_0"])["documents"][0]
         assert doc == "alpha revised"
 
+    def test_new_chunks_are_written_before_stale_ones_are_deleted(self, backend):
+        """Searches never see an empty collection mid-reindex."""
+        backend.upsert(
+            ids=["a::chunk_0", "b::chunk_0"],
+            texts=["alpha", "beta"],
+            metadatas=[{"page_path": "a"}, {"page_path": "b"}],
+        )
+        collection = backend.collection
+        real_delete = collection.delete
+        seen = []
+
+        def spy_delete(*args, **kwargs):
+            seen.append(collection.get(ids=["a::chunk_0"])["documents"])
+            return real_delete(*args, **kwargs)
+
+        with patch.object(collection, "delete", side_effect=spy_delete):
+            backend.reindex_atomic([_chunk("a", 0, "alpha revised")])
+
+        assert seen == [["alpha revised"]]
+        assert _ids(backend) == {"a::chunk_0"}
+
     def test_reindex_with_no_chunks_empties_collection(self, backend):
         backend.upsert(ids=["a::chunk_0"], texts=["alpha"], metadatas=[{"page_path": "a"}])
         backend.reindex_atomic([])
