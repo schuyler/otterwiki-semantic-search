@@ -88,9 +88,14 @@ automatically.
 ## Testing
 
 ```sh
-pip install -e ".[dev]"
+pip install -e ".[dev,chroma,faiss]" \
+  "otterwiki @ git+https://github.com/redimp/otterwiki.git@main"
 pytest
 ```
+
+Install both in one command. Installing otterwiki first and the plugin
+second lets pip quietly swap the git build for an older PyPI release to
+satisfy chromadb's dependencies.
 
 Unit tests (chunking, frontmatter) run without ChromaDB. Integration tests
 use ChromaDB's `PersistentClient` with a temp directory.

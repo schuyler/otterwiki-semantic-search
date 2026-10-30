@@ -248,6 +248,12 @@ class OtterwikiSemanticSearchPlugin:
         # Register blueprint
         app.register_blueprint(search_bp)
 
+        # Otterwiki >= 2.26 enables CSRFProtect globally. The API authenticates
+        # by bearer token, not session cookie, so CSRF doesn't apply.
+        csrf = app.extensions.get("csrf")
+        if csrf is not None:
+            csrf.exempt(search_bp)
+
         # Register hook listener if page lifecycle hooks are available
         if _state["available"]:
             try:
